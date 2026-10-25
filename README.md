@@ -51,11 +51,11 @@ SEARXNG_URL=http://searxng:8080 docker compose up -d
 
 For separate Compose projects, make sure the router can reach SearXNG over a shared Docker network or use its reachable host URL. Set `ROUTER_CONFIG_DIR` if the files are in a different host directory.
 
-Then point clients at the router instead of SearXNG:
+Then point clients at the router instead of SearXNG. Browser searches default to HTML; API callers can request JSON explicitly:
 
 ```text
+http://localhost:8096/search?q=<term>
 http://localhost:8096/search?q=<term>&format=json
-http://localhost:8096/search?q=<term>&format=html
 ```
 
 Health check: `GET /health` shows the configured groups and the next group in

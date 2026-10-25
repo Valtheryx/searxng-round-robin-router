@@ -52,7 +52,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   const term = (u.searchParams.get("q") || "").trim();
-  const fmt = u.searchParams.get("format") || "json";
+  const fmt = u.searchParams.get("format") || "html";
   if (!term) {
     res.writeHead(400, {"Content-Type": "application/json"});
     res.end(JSON.stringify({error: "use /search?q=<term>"}));
