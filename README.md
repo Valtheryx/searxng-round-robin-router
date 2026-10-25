@@ -61,11 +61,12 @@ rotation.
 
 All via environment variables (see `docker-compose.yml`):
 
-| Variable       | Default                  | Meaning                                        |
-|----------------|--------------------------|------------------------------------------------|
-| `SEARXNG_URL`  | `http://127.0.0.1:8080`  | Base URL of your SearXNG instance              |
-| `ROUTER_PORT`  | `8080`                   | Listen port inside the container               |
-| `GROUPS`       | built-in defaults        | JSON array of arrays with SearXNG shortcuts    |
+| Variable          | Default                  | Meaning                                        |
+|-------------------|--------------------------|------------------------------------------------|
+| `SEARXNG_URL`     | `http://127.0.0.1:8080`  | Base URL of your SearXNG instance              |
+| `ROUTER_PORT`     | `8080`                   | Listen port inside the container               |
+| `ROUTER_HOST_PORT`| `8096`                   | Host port published for clients                |
+| `GROUPS`          | built-in defaults        | JSON array of arrays with SearXNG shortcuts    |
 
 Engine shortcuts are listed per instance at `GET /config` (fields `shortcut`
 and `enabled`). Example override:
@@ -99,6 +100,31 @@ engines in the group carry the results.
 - Engines that silently return no results (e.g. `bing` in some setups) or
   always fail (`access denied`, SSL errors) are better left disabled — they
   just add noise and load.
+
+## Image & resource footprint
+
+The router runs on `node:22-alpine` (~55 MB compressed, ~170 MB on disk) —
+deliberately not a fat multi-service base image. Runtime footprint is a single
+Node process, typically well under 100 MB RSS.
+
+## Versioning
+
+Releases are tagged in git and tracked in the `VERSION` file:
+
+```bash
+git tag -a vX.Y.Z -m "release vX.Y.Z"
+git push origin main vX.Y.Z
+```
+
+Current version: see [VERSION](VERSION).
+
+## Portainer
+
+Deploy via a Portainer **custom template** (type: Compose/standalone). The
+template ships the same `docker-compose.yml` and asks for `SEARXNG_URL`,
+`ROUTER_HOST_PORT` (default `8096`) and optional `GROUPS` at deploy time. The
+stack bind-mounts the checked-out repo directory (e.g. `/opt/docker/searx-router`)
+read-only as `/app`, so `router.js` updates only require a container restart.
 
 ## License
 
