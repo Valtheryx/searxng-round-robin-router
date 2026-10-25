@@ -31,8 +31,10 @@ search #3 → group C: !br !gmx !sch !nvr
 search #4 → group A: ...
 ```
 
-The response is passed through unchanged and carries an extra
-`X-Router-Engines` header naming the group that served the request.
+The response is passed through unchanged and carries extra headers naming the
+group that served the request (`X-Router-Engines`), how many groups were tried
+before it (`X-Router-Fallback`), and the full trail of tried groups
+(`X-Router-Tried`).
 
 ## What it is NOT
 
@@ -58,8 +60,29 @@ http://localhost:8096/search?q=<term>
 http://localhost:8096/search?q=<term>&format=json
 ```
 
-Health check: `GET /health` shows the configured groups and the next group in
-rotation.
+## Fallback behavior
+
+Since v1.2.0 a failed group does not fail the search. If the selected group
+answers with a network error, a non-2xx status, or a JSON response with zero
+results **while engines were unresponsive or suspended** (CAPTCHA, rate limit),
+the same query is retried against the next group in the rotation — up to
+`FALLBACK_ATTEMPTS` groups per request. The rotation pointer keeps moving, so a
+fallbacked request simply advances the shared rotation.
+
+A genuinely empty result set (all engines answered, nothing found for the
+query) is passed through without retry: gibberish queries must not amplify
+upstream load. HTML responses cannot be inspected for "empty", so fallback on
+non-2xx only applies there. Queries that already start with a bang are passed
+through untouched (explicit engine selection wins over rotation and fallback).
+
+| Variable              | Default             | Meaning                                          |
+|-----------------------|---------------------|--------------------------------------------------|
+| `FALLBACK_ATTEMPTS`   | number of groups    | Max groups tried per request (cap: group count)  |
+| `FALLBACK_ON_EMPTY`   | `1`                 | Set `0` to disable the zero-results retry        |
+| `UPSTREAM_TIMEOUT_MS` | `20000`             | Per-attempt upstream timeout (serial fallback multiplies) |
+
+Health check: `GET /health` shows the configured groups, the next group in
+rotation, and the effective fallback settings.
 
 ## Configuration
 

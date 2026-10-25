@@ -8,6 +8,9 @@ services:
       SEARXNG_URL: "${SEARXNG_URL:?Set SEARXNG_URL to your reachable SearXNG URL}"
       ROUTER_PORT: "8080"
       GROUPS: "${GROUPS:-}"
+      FALLBACK_ATTEMPTS: "${FALLBACK_ATTEMPTS:-}"
+      FALLBACK_ON_EMPTY: "${FALLBACK_ON_EMPTY:-}"
+      UPSTREAM_TIMEOUT_MS: "${UPSTREAM_TIMEOUT_MS:-}"
     volumes:
       - "${ROUTER_CONFIG_DIR:-.}:/app:ro"
     ports:
