@@ -5,14 +5,13 @@ services:
     entrypoint: ["node"]
     command: ["/app/router.js"]
     environment:
-      SEARXNG_URL: "${SEARXNG_URL:-http://127.0.0.1:8080}"
+      SEARXNG_URL: "${SEARXNG_URL:?Set SEARXNG_URL to your reachable SearXNG URL}"
       ROUTER_PORT: "8080"
-      # optional, valid JSON array-of-arrays with SearXNG engine shortcuts
       GROUPS: "${GROUPS:-}"
     volumes:
-      - ./:/app:ro
+      - "${ROUTER_CONFIG_DIR:-.}:/app:ro"
     ports:
-      - "${ROUTER_HOST_PORT:-8096}:8080"
+      - "${ROUTER_HOST_IP:-0.0.0.0}:${ROUTER_HOST_PORT:-8096}:8080"
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

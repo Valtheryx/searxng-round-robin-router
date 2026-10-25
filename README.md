@@ -43,9 +43,13 @@ The response is passed through unchanged and carries an extra
 
 ## Quick start
 
+Place `router.js` and `docker-compose.yml` in the same directory. Set the SearXNG URL to an address reachable from the router container, then deploy:
+
 ```bash
-docker compose up -d
+SEARXNG_URL=http://searxng:8080 docker compose up -d
 ```
+
+For separate Compose projects, make sure the router can reach SearXNG over a shared Docker network or use its reachable host URL. Set `ROUTER_CONFIG_DIR` if the files are in a different host directory.
 
 Then point clients at the router instead of SearXNG:
 
@@ -61,12 +65,14 @@ rotation.
 
 All via environment variables (see `docker-compose.yml`):
 
-| Variable          | Default                  | Meaning                                        |
-|-------------------|--------------------------|------------------------------------------------|
-| `SEARXNG_URL`     | `http://127.0.0.1:8080`  | Base URL of your SearXNG instance              |
-| `ROUTER_PORT`     | `8080`                   | Listen port inside the container               |
-| `ROUTER_HOST_PORT`| `8096`                   | Host port published for clients                |
-| `GROUPS`          | built-in defaults        | JSON array of arrays with SearXNG shortcuts    |
+| Variable             | Default                 | Meaning                                          |
+|----------------------|-------------------------|--------------------------------------------------|
+| `SEARXNG_URL`        | required                | Reachable base URL of your SearXNG instance      |
+| `ROUTER_PORT`        | `8080`                  | Listen port inside the container                |
+| `ROUTER_HOST_PORT`   | `8096`                  | Host port published for clients                 |
+| `ROUTER_HOST_IP`     | `0.0.0.0`               | Host interface to bind; set a private IP to limit exposure |
+| `ROUTER_CONFIG_DIR`  | `.`                     | Host directory containing `router.js`           |
+| `GROUPS`             | built-in defaults       | JSON array of arrays with SearXNG shortcuts     |
 
 Engine shortcuts are listed per instance at `GET /config` (fields `shortcut`
 and `enabled`). Example override:
@@ -87,10 +93,9 @@ curl 'http://searx:8080/search?q=!yh+test&format=json' | jq '.results | length'
 curl 'http://searx:8080/search?q=!yh+test&format=json' | jq '.unresponsive_engines'
 ```
 
-Deployed groups used for tuning: 3 groups with 3–4 engines each; engines that
-repeatedly returned CAPTCHA/429 (`google cse`, `duckduckgo`, `brave`) are kept
-in the mix as fallback — the rotation gives them rest windows while the other
-engines in the group carry the results.
+The built-in example groups are deliberately generic. Replace them with
+shortcuts that are enabled and work on your SearXNG instance; avoid putting
+provider-specific or private infrastructure details in the repository.
 
 ## SearXNG side notes
 
@@ -117,14 +122,6 @@ git push origin main vX.Y.Z
 ```
 
 Current version: see [VERSION](VERSION).
-
-## Portainer
-
-Deploy via a Portainer **custom template** (type: Compose/standalone). The
-template ships the same `docker-compose.yml` and asks for `SEARXNG_URL`,
-`ROUTER_HOST_PORT` (default `8096`) and optional `GROUPS` at deploy time. The
-stack bind-mounts the checked-out repo directory (e.g. `/opt/docker/searx-router`)
-read-only as `/app`, so `router.js` updates only require a container restart.
 
 ## License
 
