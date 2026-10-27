@@ -135,6 +135,19 @@ per involved instance; JSON results are merged (results concatenated,
 unresponsive engines combined, `number_of_results` summed). For `format=html`
 the first successful response is passed through unchanged.
 
+## Engine status endpoint (v1.3.2)
+
+`GET /engine-status` — designed for dashboard widgets (Homepage customapi etc.).
+The router runs ONE gentle category probe search per instance (cached, default
+10 minutes via `ENGINE_STATUS_CACHE_MS`) and reports which general engines
+answered, which are blocked (CAPTCHA, 429, 403, timeout) and the disabled
+engines with their last monitor verdict:
+
+```text
+/engine-status                 -> { "<instance>": {...}, ... }
+/engine-status?instance=searxng -> { "active": "8/10", "blocked": "brave (429)", "disabled": "..." }
+```
+
 ## Engine monitor (v1.3.0+)
 
 `monitor.js` is a cron-style companion container. Every `MONITOR_INTERVAL_H`

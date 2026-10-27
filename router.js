@@ -30,6 +30,10 @@
 //     (monitor-state.json) so an external relay can report promotions.//
 // v1.3.1: no router code changes — pairs with monitor.js 1.3.1 (the monitor
 // skips promotion for engines that are already part of the rotation).
+// v1.3.2: /engine-status — dashboard endpoint. Runs ONE gentle category probe
+// search per instance (cached, default 10 min) and reports which general
+// engines answered vs. which are blocked (CAPTCHA, 429, 403, timeout), plus
+// the disabled engines with their last monitor verdict.
 //
 // Env:
 //   SEARXNG_URL          base URL of the default SearXNG instance
@@ -46,7 +50,7 @@
 const http = require("http");
 const fs = require("fs");
 
-const VERSION = "1.3.1";
+const VERSION = "1.3.2";
 const SEARX = process.env.SEARXNG_URL || "http://127.0.0.1:8080";
 const PORT = parseInt(process.env.ROUTER_PORT || "8080", 10);
 const TIMEOUT_MS = parseInt(process.env.UPSTREAM_TIMEOUT_MS || "20000", 10);
@@ -249,7 +253,80 @@ function readJsonFile(path) {
   }
 }
 
-const server = http.createServer((req, res) => {
+// --- engine status for dashboards (GET /engine-status) ---
+const STATUS_QUERY = process.env.ENGINE_STATUS_QUERY || "wetter deutschland";
+const STATUS_CACHE_MS = parseInt(process.env.ENGINE_STATUS_CACHE_MS || "600000", 10);
+const statusCache = {}; // instanceKey -> {at, ...}
+let statusBusy = false;
+
+function fetchOnceJson(target) {
+  return fetchOnce(target).then((r) => {
+    if (r.error) return { error: String(r.error) };
+    try {
+      return { data: JSON.parse(r.body.toString("utf8")) };
+    } catch (e) {
+      return { error: "invalid json" };
+    }
+  });
+}
+
+function shortReason(reason) {
+  const r = String(reason || "").toLowerCase();
+  if (r.includes("econnrefused") || r.includes("ehostunreach") || r.includes("etimedout")) return "offline";
+  if (r.includes("captcha")) return "captcha";
+  if (r.includes("too many requests")) return "429";
+  if (r.includes("access denied")) return "403";
+  if (r.includes("timeout")) return "timeout";
+  if (r.includes("leise leer") || r.includes("empty")) return "leer";
+  return String(reason || "").slice(0, 30);
+}
+
+async function refreshEngineStatus() {
+  if (statusBusy) return;
+  statusBusy = true;
+  try {
+    for (const [key, base] of Object.entries(INSTANCES)) {
+      const entry = { url: base, at: Date.now() };
+      const [cfg, search] = await Promise.all([
+        fetchOnceJson(base + "/config"),
+        fetchOnceJson(
+          base + "/search?" +
+            new URLSearchParams({ q: STATUS_QUERY, categories: "general", format: "json" })
+        ),
+      ]);
+      if (cfg.data && Array.isArray(cfg.data.engines)) {
+        entry.enabledGeneral = [];
+        entry.disabled = [];
+        for (const e of cfg.data.engines) {
+          if (!(e.categories || []).includes("general")) continue;
+          (e.enabled ? entry.enabledGeneral : entry.disabled).push(e.name);
+        }
+      }
+      if (search.data) {
+        const answered = {};
+        for (const r of search.data.results || []) answered[r.engine] = true;
+        const unres = (search.data.unresponsive_engines || []).map((u) =>
+          Array.isArray(u) ? { engine: u[0], reason: u[1] } : { engine: String(u), reason: "" }
+        );
+        entry.active = (entry.enabledGeneral || []).filter((n) => answered[n]);
+        entry.blocked = unres;
+        entry.silent = (entry.enabledGeneral || [])
+          .filter((n) => !answered[n] && !unres.some((b) => b.engine === n))
+          .map((n) => ({ engine: n, reason: "keine Treffer" }));
+      }
+      entry.ok = !!(Array.isArray(entry.enabledGeneral) && Array.isArray(entry.active));
+      statusCache[key] = entry;
+    }
+  } catch (e) {
+    console.error("engine status refresh failed:", e.message);
+  } finally {
+    statusBusy = false;
+  }
+}
+
+setInterval(refreshEngineStatus, STATUS_CACHE_MS);
+
+const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://localhost");
   if (u.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -281,6 +358,50 @@ const server = http.createServer((req, res) => {
     };
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(out));
+    return;
+  }
+  if (u.pathname === "/engine-status") {
+    const want = u.searchParams.get("instance");
+    const keys = want && INSTANCES[want] ? [want] : Object.keys(INSTANCES);
+    const missing = keys.filter((k) => !statusCache[k]);
+    if (missing.length && !statusBusy) {
+      await refreshEngineStatus();
+    }
+    const ms = MONITOR_STATE_FILE ? readJsonFile(MONITOR_STATE_FILE) : null;
+    const monByName = {};
+    if (ms && ms.engines) {
+      for (const [bang, e] of Object.entries(ms.engines)) {
+        monByName[e.name] = e;
+      }
+    }
+    const fmt = (key) => {
+      const st = statusCache[key];
+      if (!st) return { ok: false, error: "no status yet" };
+      const blockedAll = [...(st.blocked || []), ...(st.silent || [])];
+      const disabled = (st.disabled || []).map((name) => {
+        const e = monByName[name];
+        const inst = e && e.instances && e.instances[key];
+        const last = inst && inst.history && inst.history[inst.history.length - 1];
+        return `${name} (${last ? (last.ok ? "wieder ok" : shortReason(last.reason)) : "nicht überwacht"})`;
+      });
+      return {
+        ok: true,
+        url: st.url,
+        fetchedAt: st.at ? new Date(st.at).toISOString() : null,
+        active: `${st.active.length}/${st.enabledGeneral.length}`,
+        blocked:
+          blockedAll.map((b) => `${b.engine} (${shortReason(b.reason)})`).join(", ") || "-",
+        disabled: disabled.join(", ") || "-",
+      };
+    };
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (want && INSTANCES[want]) {
+      res.end(JSON.stringify(fmt(want)));
+    } else {
+      const out = {};
+      for (const k of keys) out[k] = fmt(k);
+      res.end(JSON.stringify(out));
+    }
     return;
   }
   if (u.pathname !== "/search" && u.pathname !== "/") {
@@ -400,6 +521,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
+setTimeout(() => { refreshEngineStatus(); }, 3000);
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`searx-router v${VERSION} listening on :${PORT} -> ${SEARX}`);
   console.log(
