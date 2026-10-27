@@ -96,6 +96,9 @@ All via environment variables (see `docker-compose.yml`):
 | `ROUTER_HOST_IP`     | `0.0.0.0`               | Host interface to bind; set a private IP to limit exposure |
 | `ROUTER_CONFIG_DIR`  | `.`                     | Host directory containing `router.js`           |
 | `GROUPS`             | built-in defaults       | JSON array of arrays with SearXNG shortcuts     |
+| `GROUPS_FILE`        | unset                   | JSON file with the groups, polled every 5 s (hot reload) |
+| `INSTANCES`          | `{"searxng":SEARXNG_URL}` | JSON map instance key → SearXNG base URL       |
+| `MONITOR_STATE_FILE` | unset                   | Path to the monitor state file, served at `/monitor` |
 
 Engine shortcuts are listed per instance at `GET /config` (fields `shortcut`
 and `enabled`). Example override:
@@ -104,6 +107,49 @@ and `enabled`). Example override:
 environment:
   GROUPS: '[["ddg","yh"],["goc","szn","yd"],["br","mwm"]]'
 ```
+
+## Groups file & hot reload (v1.3.0+)
+
+Instead of the static `GROUPS` env, point `GROUPS_FILE` at a JSON file (a
+writable directory shared with the monitor below). The router polls it every
+5 s and reloads the rotation on change — no restart needed. A group item is an
+engine-bang string for the default instance, or a `{"b": ["bang"], "i":
+"instanceKey"}` object for another instance:
+
+```json
+[
+  ["goc", "yd", "szn"],
+  ["br", "yh", "mwm"],
+  [{"b": ["ddg", "gmx"], "i": "searx-home"}]
+]
+```
+
+Set `INSTANCES` to a JSON map of instance key → base URL, e.g.
+`'{"searxng":"http://searxng:8080","searx-home":"http://10.0.0.5:8888"}'`
+(key `searxng` always maps to `SEARXNG_URL`). This lets you spread queries
+across two SearXNG instances — and therefore two source IPs — which often
+unblocks engines that refuse your datacenter IP.
+
+A group spanning several instances is answered with parallel sub-requests, one
+per involved instance; JSON results are merged (results concatenated,
+unresponsive engines combined, `number_of_results` summed). For `format=html`
+the first successful response is passed through unchanged.
+
+## Engine monitor (v1.3.0+)
+
+`monitor.js` is a cron-style companion container. Every `MONITOR_INTERVAL_H`
+hours (default 72) it probes each candidate engine with exactly **one** gentle
+query per instance — never bursts. Two clean runs in a row promote the engine:
+its bang is appended to a group in `GROUPS_FILE` as an
+`{"b": [...], "i": "..."}` entry, the router reloads within 5 s, and the
+promotion is verified against the router `/health` endpoint. Engines already
+present in the rotation are never promoted twice (v1.3.1).
+
+State lives in `MONITOR_STATE_FILE` and is served by the router at
+`GET /monitor` (together with the active groups), so an external relay — a
+cron job, a bot, anything that can read a URL — can report promotions without
+holding any credentials of its own. Configure the watched engines in the
+`CANDIDATES` object at the top of `monitor.js`.
 
 ## Picking engines for the groups
 

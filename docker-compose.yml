@@ -6,8 +6,11 @@ services:
     command: ["/app/router.js"]
     environment:
       SEARXNG_URL: "${SEARXNG_URL:?Set SEARXNG_URL to your reachable SearXNG URL}"
+      INSTANCES: "${INSTANCES:-}"
       ROUTER_PORT: "8080"
       GROUPS: "${GROUPS:-}"
+      GROUPS_FILE: "${GROUPS_FILE:-/app/groups.json}"
+      MONITOR_STATE_FILE: "${MONITOR_STATE_FILE:-/app/monitor-state.json}"
       FALLBACK_ATTEMPTS: "${FALLBACK_ATTEMPTS:-}"
       FALLBACK_ON_EMPTY: "${FALLBACK_ON_EMPTY:-}"
       UPSTREAM_TIMEOUT_MS: "${UPSTREAM_TIMEOUT_MS:-}"
@@ -15,6 +18,31 @@ services:
       - "${ROUTER_CONFIG_DIR:-.}:/app:ro"
     ports:
       - "${ROUTER_HOST_IP:-0.0.0.0}:${ROUTER_HOST_PORT:-8096}:8080"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  engine-monitor:
+    image: node:22-alpine
+    container_name: searx-engine-monitor
+    entrypoint: ["node"]
+    command: ["/app/monitor.js"]
+    depends_on:
+      - searx-router
+    environment:
+      SEARXNG_URL: "${SEARXNG_URL:?Set SEARXNG_URL to your reachable SearXNG URL}"
+      GROUPS_FILE: "${GROUPS_FILE:-/app/groups.json}"
+      MONITOR_STATE_FILE: "${MONITOR_STATE_FILE:-/app/monitor-state.json}"
+      MONITOR_INTERVAL_H: "${MONITOR_INTERVAL_H:-72}"
+      ROUTER_HEALTH_URL: "http://searx-router:8080/health"
+      MONITOR_INSTANCES: "${MONITOR_INSTANCES:-}"
+    volumes:
+      - "${ROUTER_CONFIG_DIR:-.}:/app:rw"
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
