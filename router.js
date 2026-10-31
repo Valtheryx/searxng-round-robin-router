@@ -34,6 +34,12 @@
 // search per instance (cached, default 10 min) and reports which general
 // engines answered vs. which are blocked (CAPTCHA, 429, 403, timeout), plus
 // the disabled engines with their last monitor verdict.
+// v1.4.0: /stats — search accounting for dashboards. Every /search request the
+// router answers is counted into 10-minute buckets persisted to STATS_FILE and
+// classified as successful or blocked (blocked = non-2xx, or an answer without
+// any result while engines reported errors/CAPTCHA/429 — parsed from JSON
+// `unresponsive_engines` or the HTML engines_msg table). /stats returns the
+// counts for the last 24 h, 7 days and overall plus the success rate.
 //
 // Env:
 //   SEARXNG_URL          base URL of the default SearXNG instance
@@ -46,11 +52,14 @@
 //   FALLBACK_ATTEMPTS    max groups tried per request (default: number of groups)
 //   FALLBACK_ON_EMPTY    "0" disables the zero-results retry (default on)
 //   UPSTREAM_TIMEOUT_MS  per-attempt upstream timeout (default 20000)
+//   STATS_FILE           optional path for the persisted search counters
+//                        (default /app/stats.json)
+//   STATS_BUCKET_MIN     bucket size in minutes for the counters (default 10)
 
 const http = require("http");
 const fs = require("fs");
 
-const VERSION = "1.3.2";
+const VERSION = "1.4.0";
 const SEARX = process.env.SEARXNG_URL || "http://127.0.0.1:8080";
 const PORT = parseInt(process.env.ROUTER_PORT || "8080", 10);
 const TIMEOUT_MS = parseInt(process.env.UPSTREAM_TIMEOUT_MS || "20000", 10);
@@ -222,7 +231,11 @@ function mergeResponses(subs) {
     };
   }
   // non-JSON (HTML) or unparseable: first successful response wins
-  return { status: ok[0].status, headers: ok[0].headers, body: ok[0].body };
+  return {
+    status: ok[0].resp.status,
+    headers: ok[0].resp.headers,
+    body: ok[0].resp.body,
+  };
 }
 
 // Decide whether a 2xx response warrants a retry with the next group.
@@ -252,6 +265,115 @@ function readJsonFile(path) {
     return null;
   }
 }
+
+// --- search accounting for dashboards (/stats, v1.4.0) ---
+const STATS_FILE = process.env.STATS_FILE || "/app/stats.json";
+const BUCKET_MS = parseInt(process.env.STATS_BUCKET_MIN || "10", 10) * 60000;
+const KEEP_BUCKETS = Math.ceil((8 * 24 * 3600000) / BUCKET_MS); // keep 8 days
+let stats = { since: Date.now(), buckets: {} };
+
+(function loadStats() {
+  const d = readJsonFile(STATS_FILE);
+  if (d && d.buckets && typeof d.buckets === "object") {
+    stats = { since: d.since || Date.now(), buckets: d.buckets };
+  }
+})();
+
+function pruneStats() {
+  const cutoff = Math.floor(Date.now() / BUCKET_MS) - KEEP_BUCKETS;
+  for (const k of Object.keys(stats.buckets)) {
+    if (parseInt(k, 10) <= cutoff) delete stats.buckets[k];
+  }
+}
+
+let statsDirty = false;
+let statsTimer = null;
+function saveStats() {
+  if (!statsDirty) return;
+  pruneStats();
+  try {
+    fs.writeFileSync(STATS_FILE, JSON.stringify(stats));
+    statsDirty = false;
+  } catch (e) {
+    console.error("stats write failed:", e.message);
+  }
+}
+function scheduleStatsSave() {
+  statsDirty = true;
+  if (statsTimer) return;
+  statsTimer = setTimeout(() => {
+    statsTimer = null;
+    saveStats();
+  }, 5000);
+  if (statsTimer.unref) statsTimer.unref();
+}
+
+function recordSearch(blocked) {
+  const k = String(Math.floor(Date.now() / BUCKET_MS));
+  const b = stats.buckets[k] || (stats.buckets[k] = { n: 0, b: 0 });
+  b.n += 1;
+  if (blocked) b.b += 1;
+  scheduleStatsSave();
+}
+
+// blocked = request failed, or answered without a single result while the
+// engines reported errors (CAPTCHA, 429, 403, timeout, crash).
+function classifyResponse(status, headers, body) {
+  if (status >= 400) return "blocked";
+  const ct = ((headers && headers["content-type"]) || "").toLowerCase();
+  const text = body ? body.toString("utf8") : "";
+  if (ct.includes("json")) {
+    try {
+      const d = JSON.parse(text);
+      const n = Array.isArray(d.results) ? d.results.length : 0;
+      const unres = Array.isArray(d.unresponsive_engines)
+        ? d.unresponsive_engines.length
+        : Array.isArray(d.unresponsiveEngines)
+        ? d.unresponsiveEngines.length
+        : 0;
+      return n === 0 && unres > 0 ? "blocked" : "ok";
+    } catch (e) {
+      return "ok";
+    }
+  }
+  const results = (text.match(/<article[^>]*class="[^"]*\bresult\b/g) || []).length;
+  const errors = (text.match(/class="response-error"/g) || []).length;
+  return results === 0 && errors > 0 ? "blocked" : "ok";
+}
+
+function recordOutcome(status, headers, body) {
+  try {
+    recordSearch(classifyResponse(status, headers, body) === "blocked");
+  } catch (e) {
+    console.error("stats record failed:", e.message);
+  }
+}
+
+function windowStats(ms) {
+  const from = Date.now() - ms;
+  let n = 0, bl = 0;
+  for (const [k, v] of Object.entries(stats.buckets)) {
+    if (parseInt(k, 10) * BUCKET_MS < from) continue;
+    if (!v || typeof v.n !== "number") continue;
+    n += v.n;
+    bl += typeof v.b === "number" ? v.b : 0;
+  }
+  return {
+    total: n,
+    blocked: bl,
+    ok: n - bl,
+    rate: n ? Math.round(((n - bl) / n) * 1000) / 10 : null,
+  };
+}
+
+process.on("SIGTERM", () => {
+  saveStats();
+  process.exit(0);
+});
+process.on("SIGINT", () => {
+  saveStats();
+  process.exit(0);
+});
 
 // --- engine status for dashboards (GET /engine-status) ---
 const STATUS_QUERY = process.env.ENGINE_STATUS_QUERY || "wetter deutschland";
@@ -404,6 +526,30 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
+  if (u.pathname === "/stats") {
+    const d24 = windowStats(24 * 3600000);
+    const d7 = windowStats(7 * 24 * 3600000);
+    const all = windowStats(3650 * 24 * 3600000);
+    const pct = (r) => (r === null ? "-" : r.toFixed(1) + " %");
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(
+      JSON.stringify({
+        ok: true,
+        version: VERSION,
+        tracking_since: new Date(stats.since).toISOString(),
+        searches_24h: d24.total,
+        searches_7d: d7.total,
+        searches_total: all.total,
+        blocked_24h: d24.blocked,
+        blocked_7d: d7.blocked,
+        blocked_total: all.blocked,
+        success_rate_24h: pct(d24.rate),
+        success_rate_7d: pct(d7.rate),
+        success_rate_total: pct(all.rate),
+      })
+    );
+    return;
+  }
   if (u.pathname !== "/search" && u.pathname !== "/") {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "use /search?q=<term>" }));
@@ -431,6 +577,7 @@ const server = http.createServer(async (req, res) => {
         "Content-Type": r.headers["content-type"] || "text/html",
         "X-Router-Engines": "(passthrough)",
       });
+      recordOutcome(r.status, r.headers, r.body);
       res.end(r.body);
     });
     return;
@@ -478,6 +625,7 @@ const server = http.createServer(async (req, res) => {
             )
             .join(" -> "),
         });
+        recordOutcome(last.status, last.headers, last.body);
         res.end(last.body);
         return;
       }
@@ -501,6 +649,7 @@ const server = http.createServer(async (req, res) => {
         "X-Router-Fallback": String(Math.max(tried.length - 1, 0)),
         "X-Router-Tried": label,
       });
+      recordOutcome(last.status, last.headers, last.body);
       res.end(last.body);
     } else {
       res.writeHead(502, {
@@ -514,10 +663,13 @@ const server = http.createServer(async (req, res) => {
           .join(" -> "),
       });
       res.end(JSON.stringify({ error: "all attempts failed" }));
+      recordOutcome(502, {}, null);
     }
   })().catch((e) => {
+    console.error("search failed:", e && e.stack ? e.stack : e);
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: String(e) }));
+    recordOutcome(500, {}, null);
   });
 });
 

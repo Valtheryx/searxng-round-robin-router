@@ -99,6 +99,8 @@ All via environment variables (see `docker-compose.yml`):
 | `GROUPS_FILE`        | unset                   | JSON file with the groups, polled every 5 s (hot reload) |
 | `INSTANCES`          | `{"searxng":SEARXNG_URL}` | JSON map instance key → SearXNG base URL       |
 | `MONITOR_STATE_FILE` | unset                   | Path to the monitor state file, served at `/monitor` |
+| `STATS_FILE`         | `/app/stats.json`       | Where the search counters are persisted (needs a writable mount) |
+| `STATS_BUCKET_MIN`   | `10`                    | Bucket size in minutes for the counters          |
 
 Engine shortcuts are listed per instance at `GET /config` (fields `shortcut`
 and `enabled`). Example override:
@@ -147,6 +149,33 @@ engines with their last monitor verdict:
 /engine-status                 -> { "<instance>": {...}, ... }
 /engine-status?instance=searxng -> { "active": "8/10", "blocked": "brave (429)", "disabled": "..." }
 ```
+
+## Search statistics (v1.4.0)
+
+`GET /stats` — search accounting for dashboards. Every `/search` request the
+router answers is counted into buckets (default 10 min, persisted to
+`STATS_FILE`, 8 days of history) and classified:
+
+- **blocked** — the request failed (non-2xx, upstream down), or it answered
+  without a single result *while the engines reported errors* (CAPTCHA, 429,
+  403, timeout, crash). Detected from the JSON `unresponsive_engines` list or,
+  for HTML responses, from the `response-error` rows of the
+  "Messages from the search engines" table.
+- **successful** — anything else, including a genuinely empty result set from
+  healthy engines.
+
+```json
+{
+  "searches_24h": 42, "searches_7d": 311, "searches_total": 311,
+  "blocked_24h": 3, "blocked_7d": 27, "blocked_total": 27,
+  "success_rate_24h": "92.9 %", "success_rate_7d": "91.3 %",
+  "success_rate_total": "91.3 %", "tracking_since": "...", "version": "1.4.0"
+}
+```
+
+Counters are written to disk (debounced, plus on SIGTERM), so a container
+restart keeps the history. Only searches that pass through the router are
+counted — direct hits on SearXNG itself are not.
 
 ## Engine monitor (v1.3.0+)
 

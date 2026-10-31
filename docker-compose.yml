@@ -14,8 +14,9 @@ services:
       FALLBACK_ATTEMPTS: "${FALLBACK_ATTEMPTS:-}"
       FALLBACK_ON_EMPTY: "${FALLBACK_ON_EMPTY:-}"
       UPSTREAM_TIMEOUT_MS: "${UPSTREAM_TIMEOUT_MS:-}"
+      STATS_FILE: "${STATS_FILE:-/app/stats.json}"
     volumes:
-      - "${ROUTER_CONFIG_DIR:-.}:/app:ro"
+      - "${ROUTER_CONFIG_DIR:-.}:/app:rw"
     ports:
       - "${ROUTER_HOST_IP:-0.0.0.0}:${ROUTER_HOST_PORT:-8096}:8080"
     restart: unless-stopped
