@@ -150,7 +150,7 @@ engines with their last monitor verdict:
 /engine-status?instance=searxng -> { "active": "8/10", "blocked": "brave (429)", "disabled": "..." }
 ```
 
-## Search statistics (v1.4.0)
+## Search statistics (v1.4.0+)
 
 `GET /stats` — search accounting for dashboards. Every `/search` request the
 router answers is counted into buckets (default 10 min, persisted to
@@ -167,11 +167,18 @@ router answers is counted into buckets (default 10 min, persisted to
 ```json
 {
   "searches_24h": 42, "searches_7d": 311, "searches_total": 311,
+  "searches_24h_api": 33, "searches_7d_api": 240, "searches_total_api": 240,
+  "searches_24h_web": 9, "searches_7d_web": 71, "searches_total_web": 71,
   "blocked_24h": 3, "blocked_7d": 27, "blocked_total": 27,
   "success_rate_24h": "92.9 %", "success_rate_7d": "91.3 %",
-  "success_rate_total": "91.3 %", "tracking_since": "...", "version": "1.4.0"
+  "success_rate_total": "91.3 %", "tracking_since": "...", "version": "1.5.0"
 }
 ```
+
+Since v1.5.0 the counters are also split by response format: `searches_*_api`
+covers **agent/API** calls (`format=json` — AI agents, scraping pipelines,
+scripts) and `searches_*_web` the SearXNG web UI (`format=html`). Both add up
+to the totals above.
 
 Counters are written to disk (debounced, plus on SIGTERM), so a container
 restart keeps the history. Only searches that pass through the router are
